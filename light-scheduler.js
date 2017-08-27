@@ -1,106 +1,114 @@
-module.exports = function(RED) {
-  "use strict";
-  var path = require('path');
-  var req = require('request');
-  var util = require('util');  
-  var scheduler = require('./lib/scheduler.js');
-  var isItDark = require('./lib/isitdark.js');
+module.exports = function (RED) {
+    "use strict";
+    var path = require('path');
+    var req = require('request');
+    var util = require('util');
+    var scheduler = require('./lib/scheduler.js');
+    var isItDark = require('./lib/isitdark.js');
 
-  var LightScheduler = function(n) {
+    var LightScheduler = function (n) {
 
-    RED.nodes.createNode(this, n);
-    this.settings = RED.nodes.getNode(n.settings); // Get global settings
-    this.events = JSON.parse(n.events);
-    this.topic = n.topic;
-    this.onPayload = n.onPayload;
-    this.onPayloadType = n.onPayloadType;
-    this.offPayload = n.offPayload;
-    this.offPayloadType = n.offPayloadType;
-    this.onlyWhenDark = n.onlyWhenDark;
-    this.override = 'auto';
-    this.prevPayload = null;
-    var node = this;
-
-
-    function setState(out) {
-      var msg = {
-        topic: node.topic,
-      };
-      if(out)
-        msg.payload = RED.util.evaluateNodeProperty(node.onPayload, node.onPayloadType, node, msg);
-      else
-        msg.payload = RED.util.evaluateNodeProperty(node.offPayload, node.offPayloadType, node, msg);
-
-      var overrideTxt = node.override == 'auto'?'':' (Override: ' + node.override + ')';
-      node.status({fill: out?"green":"red", shape: "dot", text: msg.payload + overrideTxt});
-
-      // Only send anything if the state have changed.
-      if(msg.payload !== node.prevPayload)
-      {
-        node.send(msg);
-        node.prevPayload = msg.payload;
-      }
-    }
+        RED.nodes.createNode(this, n);
+        this.settings = RED.nodes.getNode(n.settings); // Get global settings
+        this.events = JSON.parse(n.events);
+        this.topic = n.topic;
+        this.onPayload = n.onPayload;
+        this.onPayloadType = n.onPayloadType;
+        this.offPayload = n.offPayload;
+        this.offPayloadType = n.offPayloadType;
+        this.onlyWhenDark = n.onlyWhenDark;
+        this.override = 'auto';
+        this.isDark = null;
+        this.prevPayload = null;
+        var node = this;
 
 
-    function evaluate() {
-      // Handle override state, if any.
-      if(node.override == 'on')
-        return setState(true);
+        function setState(out) {
+            var msg = {topic: node.topic};
+            if (out)
+                msg.payload = RED.util.evaluateNodeProperty(node.onPayload, node.onPayloadType, node, msg);
+            else
+                msg.payload = RED.util.evaluateNodeProperty(node.offPayload, node.offPayloadType, node, msg);
 
-      if(node.override == 'off')
-        return setState(false);
+            var overrideTxt = node.override === 'auto' ? '' : ' (Override: ' + node.override + ')';
+            node.status({fill: out ? "green" : "red", shape: "dot", text: msg.payload + overrideTxt + ' ' + node.isDark});
 
-      var matchEvent = scheduler.matchSchedule(node);
-
-      if(node.override == 'schedule-only')
-        return setState(matchEvent);
-
-      if(node.override == 'light-only')
-        return setState(isItDark(node));
-
-      // node.override == auto
-      if(!matchEvent)
-        return setState(false);
-
-      if(node.onlyWhenDark)
-        return setState(isItDark(node));
-
-      return setState(true);
-    }
+            // Only send anything if the state have changed.
+            if (msg.payload !== node.prevPayload)
+            {
+                node.send(msg);
+                node.prevPayload = msg.payload;
+            }
+        }
 
 
-    node.on('input', function(msg) {
-      if(msg.payload.match(/^(on|off|auto|schedule-only|light-only)$/i))
-      {
-        node.override = msg.payload.toLowerCase();;
-        //console.log("Override: " + node.override);
-      }
-      else
-        node.warn('Failed to interpret incomming msg.payload. Ignoring it!');
+        function evaluate() {
+            // Handle override state, if any.
+            if (node.override === 'on')
+                return setState(true);
 
-      evaluate();
-    });
+            if (node.override === 'off')
+                return setState(false);
 
-    // re-evaluate every minute
-    node.evalInterval = setInterval(evaluate, 60000);
+            var matchEvent = scheduler.matchSchedule(node);
 
-    // Run initially directly after start / deploy.
-    setTimeout(evaluate, 1000);
+            if (node.override === 'schedule-only')
+                return setState(matchEvent);
 
-    node.on('close', function() {
-      clearInterval(node.evalInterval);
-    });
-	};
+            if (node.override === 'light-only')
+                return setState(isItDark(node));
+
+            // node.override == auto
+            if (!matchEvent)
+                return setState(false);
+
+            if (node.onlyWhenDark)
+                return setState(isItDark(node));
+
+            return setState(true);
+        }
 
 
-  RED.nodes.registerType("light-scheduler", LightScheduler);
+        node.on('input', function (msg) {
+            if (msg.payload.match(/^(on|off|auto|schedule-only|light-only)$/i))
+            {
+                node.override = msg.payload.toLowerCase();
+                //console.log("Override: " + node.override);
+            } else if (msg.payload.match(/^(setDark)$/i)) {
+                if (typeof (msg.isDark) === 'boolean') {
+                    node.isDark = msg.isDark;
+//                    RED.log.info('Set isDark to ' + msg.isDark);
+                } else {
+                    node.isDark = null;
+                    RED.log.warn('SetDark needs boolean msg.isDark=true|false');
+                }
+            } else if (msg.payload.match(/^(clearDark)$/i)) {
+                node.isDark = null;
+            } else
+                node.warn('Failed to interpret incomming msg.payload. Ignoring it!');
 
-  RED.httpAdmin.get('/light-scheduler/js/*', function(req,res) {
-    var options = {
-      root: __dirname + '/static/',
-      dotfiles: 'deny'
+            evaluate();
+        });
+
+        // re-evaluate every minute
+        node.evalInterval = setInterval(evaluate, 60000);
+
+        // Run initially directly after start / deploy.
+        setTimeout(evaluate, 1000);
+
+        node.on('close', function () {
+            clearInterval(node.evalInterval);
+        });
     };
-    res.sendFile(req.params[0], options);
-  });
+
+
+    RED.nodes.registerType("light-scheduler", LightScheduler);
+
+    RED.httpAdmin.get('/light-scheduler/js/*', function (req, res) {
+        var options = {
+            root: __dirname + '/static/',
+            dotfiles: 'deny'
+        };
+        res.sendFile(req.params[0], options);
+    });
 };
